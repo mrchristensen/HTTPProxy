@@ -6,7 +6,7 @@ use Digest::MD5;
 #     low probability of collisions. The port p is always even, so that
 #     users can use p and p+1 for testing with proxy and the Tiny web
 #     server.
-#     
+#
 #     usage: ./port-for-user.pl [optional user name]
 #
 my $maxport = 65536;

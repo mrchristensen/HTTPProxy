@@ -1,4 +1,4 @@
-# Makefile for Proxy Lab 
+# Makefile for Proxy Lab
 #
 # You may modify this file any way you like (except for the handin
 # rule). You instructor will type "make" on your specific Makefile to

@@ -4,7 +4,7 @@
 #                 blocking for the concurrency test. It accepts a
 #                 connection, and then spins forever.
 #
-# usage: nop-server.py <port>                
+# usage: nop-server.py <port>
 #
 import socket
 import sys

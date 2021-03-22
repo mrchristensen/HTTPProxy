@@ -2,13 +2,13 @@
 #
 # driver.sh - This is a simple autograder for the Proxy Lab. It does
 #     basic sanity checks that determine whether or not the code
-#     behaves like a concurrent caching proxy. 
+#     behaves like a concurrent caching proxy.
 #
 #     David O'Hallaron, Carnegie Mellon University
 #     updated: 2/8/2016
-# 
+#
 #     usage: ./driver.sh
-# 
+#
 
 #TODO:
 #   - Check Readers/Writers
@@ -126,7 +126,7 @@ class ProxyTestSuite:
             mem_mgmt = self.mem_mgmt * (mem_mgmt/possible_mem_mgmt)
             pts += mem_mgmt
             print('Mem Mgmt: %d/%d' % (mem_mgmt, self.mem_mgmt))
-            
+
         if self.clean_shutdown is not None:
             possible_pts += self.clean_shutdown
             clean_shutdown = self.clean_shutdown * (clean_shutdown/possible_clean_shutdown)
