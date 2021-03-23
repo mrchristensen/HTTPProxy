@@ -302,7 +302,6 @@ void *thread(void *g)
     ss = getaddrinfo(host_from_url, port_from_url, &address_hints, &address_result);
     if (ss != 0)
     {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(ss));
 
         exit(1);
     }
@@ -318,11 +317,6 @@ void *thread(void *g)
             break;
 
         close(file_desc);
-    }
-    if (r_p == NULL)
-    {
-
-        fprintf(stderr, "Could not connect\n");
     }
     freeaddrinfo(address_result);
 
@@ -351,7 +345,6 @@ void *thread(void *g)
 
         if (num_bytes_read == -1)
         {
-            perror("READ");
             return NULL;
         }
         n_bytes_read = n_bytes_read + num_bytes_read;
@@ -359,8 +352,6 @@ void *thread(void *g)
     } while (num_bytes_read != 0);
 
     sem_wait(&m_cache);
-
-    printf("Adding to the dic_cache\n");
 
     dic_cache *ind = NULL;
     ind = malloc(sizeof(dic_cache));
@@ -461,8 +452,6 @@ void *threed(void *g)
 
         sem_post(&l_buffer.buffered_items);
 
-        printf("logger thread: %s\n\n", logger);
-
         if ((file_desc = fopen("logFile.txt", "a")) == NULL)
         {
             exit(0);
@@ -492,7 +481,6 @@ int main(int argc, char *argv[])
     signal(SIGPIPE, SIG_IGN);
 
     ip_addr.sin_family = AF_INET;
-    printf("port: %s\n", argv[1]);
 
     ip_addr.sin_addr.s_addr = INADDR_ANY;
 
@@ -501,7 +489,6 @@ int main(int argc, char *argv[])
     socket_file_desc = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_file_desc < 0)
     {
-        perror("socket err");
         exit(0);
     }
     int bind_res = bind(socket_file_desc, (struct sockaddr *)&ip_addr, sizeof(struct sockaddr_in));
@@ -509,7 +496,6 @@ int main(int argc, char *argv[])
     {
         close(socket_file_desc);
 
-        perror("bind err");
         exit(0);
     }
     int listen_res = listen(socket_file_desc, 100);
@@ -517,7 +503,6 @@ int main(int argc, char *argv[])
     {
         close(socket_file_desc);
 
-        perror("listen err");
         exit(0);
     }
 
