@@ -152,6 +152,7 @@ void *thread(void *g)
 
     if (read_count == 0)
     {
+
         sem_post(&m_cache);
     }
 
@@ -389,6 +390,7 @@ f_rp:
     sem_wait(&l_buffer.buffered_items);
 
     sem_wait(&l_buffer.mutex_lock);
+
     l_buffer.buffer[(++l_buffer.last_index) % (l_buffer.max_num_of_items)] = current_url;
     sem_post(&l_buffer.mutex_lock);
 
@@ -435,7 +437,7 @@ void sig_int_han(int sig_num)
 
 void *threed(void *g)
 {
-    FILE *file_desc;
+
     pthread_detach(pthread_self());
 
     while (1)
@@ -452,14 +454,6 @@ void *threed(void *g)
 
         sem_post(&l_buffer.buffered_items);
 
-        if ((file_desc = fopen("logFile.txt", "a")) == NULL)
-        {
-            exit(0);
-        }
-        fputs(logger, file_desc);
-
-        fputs("\n", file_desc);
-        fclose(file_desc);
         free(logger);
     }
 }
