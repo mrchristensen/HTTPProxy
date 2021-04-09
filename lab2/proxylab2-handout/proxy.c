@@ -1,12 +1,12 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <stdio.h>
-//#include <errno.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <sys/epoll.h>
-#include <sys/socket.h>
 #include <string.h>
-
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/epoll.h>
 #include "csapp.h"
 
 /* Recommended max cache and object sizes */
