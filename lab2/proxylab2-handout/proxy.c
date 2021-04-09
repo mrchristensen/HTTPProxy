@@ -69,7 +69,6 @@ struct proxy_transaction
 
 int lfd;
 int epfd;
-FILE *LOG;
 
 int epoll_cnt = 0;
 int done = 0;
@@ -130,8 +129,6 @@ int main(int argc, char **argv)
     int i;
     struct event_action *ea;
     size_t n;
-
-    LOG = fopen("LOGFile.txt", "a");
 
     printf("Start of proxy\n");
     printf("user_agent_hdr: %s\n", user_agent_hdr);
