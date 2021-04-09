@@ -1,4 +1,4 @@
-//#define _GNU_SOURCE // Get access to asprintf
+#include <stdio.h>
 //#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -133,29 +133,15 @@ int main(int argc, char **argv)
 
     LOG = fopen("LOGFile.txt", "a");
 
-    fprintf(LOG, "--- Begin Proxy Session at UNIX Time %ld ---", time(NULL));
-
-    if (argc < 2)
-    {
-        fprintf(stderr, "usage: %s <port>\n", argv[0]);
-        exit(0);
-    }
+    printf("Start of proxy\n");
+    printf("user_agent_hdr: %s\n", user_agent_hdr);
 
     lfd = Open_listenfd(argv[1]);
 
     // set fd to non-blocking (set flags while keeping existing flags)
-    if (fcntl(lfd, F_SETFL, fcntl(lfd, F_GETFL, 0) | O_NONBLOCK) < 0)
-    {
-        fprintf(stderr, "error setting socket stif\n");
-        exit(1);
-    }
-
-    if ((epfd = epoll_create1(0)) < 0)
-    {
-        fprintf(stderr, "error creating epoll fd\n");
-        exit(1);
-    }
-
+    fcntl(lfd, F_SETFL, fcntl(lfd, F_GETFL, 0) | O_NONBLOCK);
+    epfd = epoll_create1(0);
+    
     ea = malloc(sizeof(struct event_action));
     ea->handler = handle_new_client;
     ea->fd = lfd;
@@ -163,12 +149,8 @@ int main(int argc, char **argv)
 
     event.data.ptr = ea;
     event.events = EPOLLIN | EPOLLET; // edge-triggered monitoring
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &event) < 0)
-    {
-        fprintf(stderr, "error adding event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: registered %d\n", __LINE__, lfd);
+    epoll_ctl(epfd, EPOLL_CTL_ADD, lfd, &event);
+    printf("listening on with fd: %d\n", lfd);
     epoll_cnt++;
 
     /* Buffer where events are returned */
@@ -185,10 +167,6 @@ int main(int argc, char **argv)
                 lfd = -1;
                 epoll_cnt--;
             }
-            if ((n == 0 || n == -1) && errno == EINTR)
-            {
-                printf("Waiting for rest of connections to finish.\n");
-            }
         }
         if (n == 0 || n == -1)
         { // size_t is unsigned, so -1 isn't actually < 0. Rip
@@ -198,25 +176,6 @@ int main(int argc, char **argv)
         for (i = 0; i < n; i++)
         { //iterate through events and handle them
             struct event_action *ea2 = (struct event_action *)events[i].data.ptr;
-            if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
-            {
-                /* An error has occured on this fd */
-                fprintf(stderr, "fd got issues %d\n", ea2->fd);
-                fprintf(stderr, "epoll: %s\n", strerror(errno));
-                if (ea2->data)
-                {
-                    free_proxyTransaction((struct proxy_transaction *)ea2->data);
-                }
-                if (ea2->fd != -1)
-                {
-                    close(ea2->fd);
-                    epoll_cnt--;
-                }
-                free(ea2);
-
-                continue;
-            }
-
             if (!ea2->handler(ea2))
             {
                 if (ea2->data)
@@ -251,11 +210,7 @@ int handle_new_client(struct event_action *ea_in)
     {
 
         // set fd to non-blocking (set flags while keeping existing flags)
-        if (fcntl(connfd, F_SETFL, fcntl(connfd, F_GETFL, 0) | O_NONBLOCK) < 0)
-        {
-            fprintf(stderr, "error setting socket option\n");
-            exit(1);
-        }
+        fcntl(connfd, F_SETFL, fcntl(connfd, F_GETFL, 0) | O_NONBLOCK);
 
         ea = malloc(sizeof(struct event_action));
         ea->handler = handle_receive_request;
@@ -273,11 +228,7 @@ int handle_new_client(struct event_action *ea_in)
         ea->data = argptr;
         event.data.ptr = ea;
         event.events = EPOLLIN | EPOLLET; // use edge-triggered monitoring
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, connfd, &event) < 0)
-        {
-            fprintf(stderr, "error adding event\n");
-            exit(1);
-        }
+        epoll_ctl(epfd, EPOLL_CTL_ADD, connfd, &event);
         epoll_cnt++;
     }
 
@@ -286,12 +237,9 @@ int handle_new_client(struct event_action *ea_in)
         // no more clients to accept()
         return 1;
     }
-    else
-    {
-        perror("error accepting");
-        return 0;
-    }
-} //HERE
+    return 0;
+
+}
 
 int read_all_available(int fd, char **buf_out, size_t *bufmaxlen, size_t *bufpos, int done_after_rnrn)
 {
@@ -411,7 +359,6 @@ size_t parse_first_line(const char *input, struct requestInfo *info)
     const char *headerBegin = protocol + 10; // Skip HTTP/1.1\r\n
     info->valid = 1;
 
-    fprintf(LOG, uri);
     return (size_t)(headerBegin - input);
 }
 
@@ -458,12 +405,6 @@ void on_response_sent(struct event_action *ea)
 {
     struct proxy_transaction *transaction = (struct proxy_transaction *)ea->data;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL) < 0)
-    {
-        fprintf(stderr, "error removing event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: deregistered %d (response sent)\n", __LINE__, transaction->clientfd);
     epoll_cnt--;
 
     close(transaction->clientfd);
@@ -485,8 +426,6 @@ int handle_send_response(struct event_action *ea)
 
     if (write_count == 0)
     {
-        // Finished writing!  Now do stuff.
-        fprintf(LOG, "Finished writing!\n");
         on_response_sent(ea);
         return 0;
     }
@@ -497,12 +436,7 @@ int handle_send_response(struct event_action *ea)
     else
     {
         // An error occured, so clean up nicely.
-        if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL) < 0)
-        {
-            fprintf(stderr, "error removing event\n");
-            exit(1);
-        }
-        fprintf(LOG, "line %d: deregistered %d (due to error)\n", __LINE__, transaction->clientfd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL);
         epoll_cnt--;
 
         free_proxyTransaction(transaction);
@@ -516,12 +450,7 @@ void on_response_received(struct event_action *ea)
 {
     struct proxy_transaction *transaction = (struct proxy_transaction *)ea->data;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->serverfd, NULL) < 0)
-    {
-        fprintf(stderr, "error removing event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: deregistered %d (response received)\n", __LINE__, transaction->serverfd);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->serverfd, NULL);
     epoll_cnt--;
 
     // add event to epoll file descriptor
@@ -529,12 +458,7 @@ void on_response_received(struct event_action *ea)
     event.data.ptr = ea;
     event.events = EPOLLOUT | EPOLLET; // use edge-triggered monitoring
 
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, transaction->clientfd, &event) < 0)
-    {
-        fprintf(stderr, "error adding event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: registered %d\n", __LINE__, transaction->clientfd);
+    epoll_ctl(epfd, EPOLL_CTL_ADD, transaction->clientfd, &event);
     epoll_cnt++;
 
     ea->handler = handle_send_response;
@@ -545,7 +469,6 @@ void on_response_received(struct event_action *ea)
 
 int handle_receive_response(struct event_action *ea)
 {
-    fprintf(LOG, "Ready to read from the server!\n");
     struct proxy_transaction *transaction = (struct proxy_transaction *)ea->data;
 
     int len = read_all_available(transaction->serverfd, &transaction->buf, &transaction->bufmaxlen, &transaction->bufpos, 0);
@@ -559,20 +482,12 @@ int handle_receive_response(struct event_action *ea)
     {
         // Some other error happened....
         // So close stuff nicely and keep on keepin' on!
-        if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->serverfd, NULL) < 0)
-        {
-            fprintf(stderr, "error removing event\n");
-            exit(1);
-        }
-        fprintf(LOG, "line %d: deregistered %d (due to error)\n", __LINE__, transaction->serverfd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->serverfd, NULL);
         epoll_cnt--;
         return 0;
     }
     else
     {
-        // It finished!
-        fprintf(LOG, "Response received!\n");
-
         transaction->buflen = len;
 
         on_response_received(ea);
@@ -591,12 +506,7 @@ void on_request_sent(struct event_action *ea)
     event.events = EPOLLIN | EPOLLET; // use edge-triggered monitoring
     ea->fd = transaction->serverfd;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_MOD, transaction->serverfd, &event) < 0)
-    {
-        fprintf(stderr, "error modifying event\n");
-        exit(1);
-    }
-    fprintf(LOG, "modified %d\n", transaction->serverfd);
+    epoll_ctl(epfd, EPOLL_CTL_MOD, transaction->serverfd, &event);
 
     Free(transaction->buf);
     transaction->bufmaxlen = 256;
@@ -616,31 +526,11 @@ int handle_send_request(struct event_action *ea)
 
     if (write_count == 0)
     {
-        // Finished writing!  Now do stuff.
-        fprintf(LOG, "Finished writing!\n");
         on_request_sent(ea);
         return 1;
     }
-    else if (errno == EWOULDBLOCK || errno == EAGAIN)
-    {
-        return 1;
-    }
-    else
-    {
-        // An error occured, so clean up nicely.
-        if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->serverfd, NULL) < 0)
-        {
-            fprintf(stderr, "error removing event\n");
-            exit(1);
-        }
-        fprintf(LOG, "line %d: deregistered %d (due to error)\n", __LINE__, transaction->serverfd);
-        epoll_cnt--;
+    return 0;
 
-        free_proxyTransaction(transaction);
-        ea->data = NULL;
-
-        return 0;
-    }
 }
 
 void prepare_request(char **headers, int header_count, struct requestInfo *req, struct proxy_transaction *transaction)
@@ -659,7 +549,7 @@ void prepare_request(char **headers, int header_count, struct requestInfo *req, 
         }
         else if (strncmp("User-Agent", headers[i], 10) == 0 ||
                  strncmp("Connection", headers[i], 10) == 0 ||
-                 strncmp("Proxy-Connection", headers[i], 16) == 0)
+                 strncmp("Proxy-Connection", headers[i], 16) == 0)  //todo: abtract this
         {
             continue;
         }
@@ -697,13 +587,6 @@ int on_request_received(struct event_action *ea)
 
     transaction->request = Malloc(sizeof(struct requestInfo));
     size_t firstLineLength = parse_first_line(transaction->buf, transaction->request);
-    if (firstLineLength == -1 || !transaction->request->valid)
-    {
-        free_requestInfo(transaction->request);
-        transaction->request = NULL;
-        fprintf(stderr, "invalid request\n");
-        return 0;
-    }
 
     int headerCount = split_headers(transaction->buf + firstLineLength, &transaction->request->headers);
     prepare_request(transaction->request->headers, headerCount, transaction->request, transaction);
@@ -713,19 +596,7 @@ int on_request_received(struct event_action *ea)
     int fd = open_clientfd(transaction->request->host, port);
     Free(port);
 
-    if (fd < 0)
-    {
-        fprintf(stderr, "error opening connection to server\n");
-        free_requestInfo(transaction->request);
-        transaction->request = NULL;
-        return 0;
-    }
-
-    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) < 0)
-    {
-        fprintf(stderr, "error setting socket option\n");
-        exit(1);
-    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
 
     transaction->serverfd = fd;
     ea->handler = handle_send_request;
@@ -736,20 +607,10 @@ int on_request_received(struct event_action *ea)
     event.events = EPOLLOUT | EPOLLET; // use edge-triggered monitoring
     ea->fd = transaction->serverfd;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, transaction->serverfd, &event) < 0)
-    {
-        fprintf(stderr, "error adding event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: registered %d\n", __LINE__, transaction->serverfd);
+    epoll_ctl(epfd, EPOLL_CTL_ADD, transaction->serverfd, &event);
     epoll_cnt++;
 
-    if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL) < 0)
-    {
-        fprintf(stderr, "error removing event\n");
-        exit(1);
-    }
-    fprintf(LOG, "line %d: deregistered %d (request received)\n", __LINE__, transaction->clientfd);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL);
     epoll_cnt--;
 
     return 1;
@@ -762,41 +623,24 @@ int handle_receive_request(struct event_action *ea)
 
     if (len == -1)
     {
-        // read_all_available encountered EWOULDBLOCK or EAGAIN
         return 1;
     }
     else if (len == -2)
     {
-        // Some other error happened....
-        // So close stuff nicely and keep on keepin' on!
-        if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL) < 0)
-        {
-            fprintf(stderr, "error removing event\n");
-            exit(1);
-        }
-        fprintf(LOG, "line %d: deregistered %d (due to error)\n", __LINE__, transaction->clientfd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL);
         epoll_cnt--;
         return 0;
     }
     else
     {
-        // It finished!
-        fprintf(LOG, "Request received!\n");
-
         transaction->buflen = len;
 
         int ret = on_request_received(ea);
         if (ret == 0)
         {
-            if (epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL) < 0)
-            {
-                fprintf(stderr, "error removing event\n");
-                exit(1);
-            }
-            fprintf(LOG, "line %d: deregistered %d (due to invalid request)\n", __LINE__, transaction->clientfd);
+            epoll_ctl(epfd, EPOLL_CTL_DEL, transaction->clientfd, NULL);
             epoll_cnt--;
         }
         return ret;
     }
 }
-/* $end select */
