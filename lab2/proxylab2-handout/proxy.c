@@ -14,6 +14,7 @@
 #define MAX_EVENTS 128
 #define HEADER_SIZE 10
 #define PROXY_SIZE 16
+#define PORT_SIZE 6
 
 #define TRUE 1
 #define FALSE 0
@@ -77,113 +78,91 @@ void sig_int_term_handler(int sig)
     sig_int_sent = TRUE;
 }
 
-void free_request_info(void *req_info)
+void free_request_info(struct request_info *req_info)
 {
-    struct request_info *info = (struct request_info *)req_info;
-    if (info->host_name)
-    {
-        Free(info->host_name);
-    }
-    if (info->path)
-    {
-        Free(info->path);
-    }
-    if (info->header_array)
-    {
-        Free(info->header_array);
-    }
-    Free(info);
+    if (req_info->header_array) Free(req_info->header_array);
+    if (req_info->path) Free(req_info->path);
+    if (req_info->host_name) Free(req_info->host_name);
+    Free(req_info);
 }
 
 void free_proxy_state(struct proxy_state *state)
 {
-    if (state->client_fd != 0)
-    {
-        close(state->client_fd);
-    }
-    if (state->server_fd != 0)
-    {
-        close(state->server_fd);
-    }
-    if (state->buffer != 0)
-    {
-        free(state->buffer);
-    }
-    if (state->req_info != 0)
-    {
-        free_request_info(state->req_info);
-    }
+    if (state->req_info != 0) free_request_info(state->req_info);
+    if (state->server_fd != 0) close(state->server_fd);
+    if (state->buffer != 0) free(state->buffer);
+    if (state->client_fd != 0) close(state->client_fd);
     free(state);
 }
 
 int main(int argc, char **argv)
 {
-    signal(SIGINT, sig_int_term_handler);
-    signal(SIGTERM, sig_int_term_handler);
+    printf("Start of main\n");
+
     signal(SIGPIPE, SIG_IGN);
+    
+    signal(SIGTERM, sig_int_term_handler);
+    signal(SIGINT, sig_int_term_handler);
 
-    struct epoll_event event;
-    struct epoll_event *events;
-    struct event_state *event_state;
     size_t max_num_events;
+    struct event_state *event_state;
+    struct epoll_event *epoll_events;
+    struct epoll_event epoll_event;
 
-    printf("Start of proxy\n");
-    printf("user_agent_hdr: %s\n", user_agent_hdr);
 
     listen_fd = Open_listenfd(argv[1]);
+    
+    printf("user_agent_hdr: %s\n", user_agent_hdr);
+    printf("listen_fd: %d\n", listen_fd);
 
-    fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
     epoll_fd = epoll_create1(0);
 
-    event_state = malloc(sizeof(struct event_state));
-    event_state->handler = handle_new_client;
-    event_state->fd = listen_fd;
-    event_state->event_data = NULL;
+    fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
 
-    event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &event);
-    printf("listening on with fd: %d\n", listen_fd);
+    event_state = malloc(sizeof(struct event_state));
+
+    event_state->event_data = NULL;
+    event_state->fd = listen_fd;
+    event_state->handler = handle_new_client;
+    epoll_event.data.ptr = event_state;
+    epoll_event.events = EPOLLIN | EPOLLET;
+
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &epoll_event);
     epoll_cnt++;
 
-    events = calloc(MAX_EVENTS, sizeof(event));
+    epoll_events = calloc(MAX_EVENTS, sizeof(epoll_event));
 
     while (epoll_cnt > 0)
     {
-        max_num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, EWOULDBLOCK_OR_EAGAIN);
+        max_num_events = epoll_wait(epoll_fd, epoll_events, MAX_EVENTS, EWOULDBLOCK_OR_EAGAIN);
+
         if (sig_int_sent)
         {
             if (listen_fd != EWOULDBLOCK_OR_EAGAIN)
             {
-                close(listen_fd);
-                listen_fd = EWOULDBLOCK_OR_EAGAIN;
                 epoll_cnt--;
+                listen_fd = EWOULDBLOCK_OR_EAGAIN;
+                close(listen_fd);
             }
         }
-        if (max_num_events == 0 || max_num_events == EWOULDBLOCK_OR_EAGAIN)
-        {
-            continue;
-        }
+
+        if (max_num_events == 0 || max_num_events == EWOULDBLOCK_OR_EAGAIN) continue;
 
         for (int index = 0; index < max_num_events; index++)
         {
-            struct event_state *temp_event_state = (struct event_state *)events[index].data.ptr;
+            struct event_state *temp_event_state = (struct event_state *)epoll_events[index].data.ptr;
+            
             if (!temp_event_state->handler(temp_event_state))
             {
-                if (temp_event_state->event_data != 0)
-                {
-                    free_proxy_state((struct proxy_state *)temp_event_state->event_data);
-                }
-                if (temp_event_state->fd != EWOULDBLOCK_OR_EAGAIN)
-                {
-                    close(temp_event_state->fd);
-                }
+                if (temp_event_state->fd != EWOULDBLOCK_OR_EAGAIN) close(temp_event_state->fd);
+                if (temp_event_state->event_data != 0) free_proxy_state((struct proxy_state *)temp_event_state->event_data);
+                
                 free(temp_event_state);
             }
         }
     }
+    free(epoll_events);
     free(event_state);
-    free(events);
 }
 
 int handle_new_client(struct event_state *event_state_in)
@@ -220,12 +199,7 @@ int handle_new_client(struct event_state *event_state_in)
         epoll_cnt++;
     }
 
-    if (errno == EWOULDBLOCK || errno == EAGAIN)
-    {
-
-        return 1;
-    }
-    return 0;
+    return (errno == EWOULDBLOCK || errno == EAGAIN) ? 1 : 0;
 }
 
 int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *buf_pos, int reached_end)
@@ -246,7 +220,6 @@ int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *b
 
         if (reached_end != 0 && *buf_pos >= 4 && strncmp("\r\n\r\n", buf + *buf_pos - 4, 4) == FALSE)
         {
-
             end = TRUE;
             break;
         }
@@ -259,14 +232,8 @@ int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *b
         buf[*buf_pos] = NULL_CHAR;
         return *buf_pos;
     }
-    else if (errno == EWOULDBLOCK || errno == EAGAIN)
-    {
-        return EWOULDBLOCK_OR_EAGAIN;
-    }
-    else
-    {
-        return OTHER_ERROR;
-    }
+
+    return (errno == EWOULDBLOCK || errno == EAGAIN) ? EWOULDBLOCK_OR_EAGAIN : OTHER_ERROR;
 }
 
 size_t parse_first_line(const char *input, struct request_info *info)
@@ -280,10 +247,8 @@ size_t parse_first_line(const char *input, struct request_info *info)
 
     const char *uri = input + 3;
 
-    while (isspace(*uri))
-    {
-        uri++;
-    }
+    while (isspace(*uri)) uri++;
+    
 
     if (strncmp("http://", uri, 7) != FALSE)
     {
@@ -293,24 +258,17 @@ size_t parse_first_line(const char *input, struct request_info *info)
 
     const char *host_start_index = uri + 7;
     const char *index = host_start_index;
-    while (*index != ':' && *index != '/')
-    {
-        index++;
-    }
+    while (*index != ':' && *index != '/') index++;
+    
 
     const char *host_end_index = index;
-    if (*index != ':')
-    {
-        info->port = TCP_PORT;
-    }
+    
+    if (*index != ':') info->port = TCP_PORT;
     else
     {
         index++;
         const char *port_start_index = index;
-        while (isdigit(*index))
-        {
-            index++;
-        }
+        while (isdigit(*index)) index++;
         info->port = atoi(port_start_index);
     }
     size_t host_length = host_end_index - host_start_index;
@@ -319,8 +277,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
     info->host_name[host_length] = NULL_CHAR;
 
     const char *next_whitespace_index = index;
-    while (!isspace(*next_whitespace_index))
-        next_whitespace_index++;
+    while (!isspace(*next_whitespace_index)) next_whitespace_index++;
 
     size_t path_len = next_whitespace_index - index;
     info->path = Malloc(path_len + 1);
@@ -328,15 +285,9 @@ size_t parse_first_line(const char *input, struct request_info *info)
     info->path[path_len] = NULL_CHAR;
 
     const char *protocol = next_whitespace_index;
-    while (isspace(*protocol))
-        protocol++;
+    while (isspace(*protocol)) protocol++;
 
-    if (strncmp("HTTP/1.", protocol, 7) != FALSE)
-    {
-        info->valid_request = FALSE;
-        return EWOULDBLOCK_OR_EAGAIN;
-    }
-    if (protocol[7] != '0' && protocol[7] != '1')
+    if ((strncmp("HTTP/1.", protocol, 7) != FALSE) || (protocol[7] != '0' && protocol[7] != '1'))
     {
         info->valid_request = FALSE;
         return EWOULDBLOCK_OR_EAGAIN;
@@ -401,23 +352,17 @@ int handle_send_response(struct event_state *event_state)
     struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
 
     int write_count;
-    while ((write_count = write(transaction->client_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE)
-    {
-        transaction->buffer_pos += write_count;
-    }
+    while ((write_count = write(transaction->client_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE) transaction->buffer_pos += write_count;
+    
 
     if (write_count == 0)
     {
         on_response_sent(event_state);
         return 0;
     }
-    else if (errno == EWOULDBLOCK || errno == EAGAIN)
-    {
-        return 1;
-    }
+    else if (errno == EWOULDBLOCK || errno == EAGAIN) return 1;
     else
     {
-
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
         epoll_cnt--;
 
@@ -454,14 +399,9 @@ int handle_receive_response(struct event_state *event_state)
 
     int length = read_all_available(transaction->server_fd, &transaction->buffer, &transaction->buffer_max_length, &transaction->buffer_pos, 0);
 
-    if (length == EWOULDBLOCK_OR_EAGAIN)
-    {
-
-        return 1;
-    }
+    if (length == EWOULDBLOCK_OR_EAGAIN) return 1;
     else if (length == OTHER_ERROR)
     {
-
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
         epoll_cnt--;
         return 0;
@@ -498,10 +438,7 @@ int handle_send_request(struct event_state *event_state)
     struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
 
     int write_count;
-    while ((write_count = write(transaction->server_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE)
-    {
-        transaction->buffer_pos += write_count;
-    }
+    while ((write_count = write(transaction->server_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE) transaction->buffer_pos += write_count;
 
     if (write_count == 0)
     {
@@ -521,16 +458,11 @@ void prepare_request(char **header_array, int header_count, struct request_info 
     int needs_host = TRUE;
     for (int index = 0; index < header_count; index++)
     {
-        if (strncmp("Host", header_array[index], 4) == FALSE)
-        {
-            needs_host = FALSE;
-        }
+        if (strncmp("Host", header_array[index], 4) == FALSE) needs_host = FALSE;
         else if (strncmp("User-Agent", header_array[index], HEADER_SIZE) == FALSE ||
                  strncmp("Connection", header_array[index], HEADER_SIZE) == FALSE ||
-                 strncmp("Proxy-Connection", header_array[index], PROXY_SIZE) == 0)
-        {
-            continue;
-        }
+                 strncmp("Proxy-Connection", header_array[index], PROXY_SIZE) == 0)  continue;
+        
 
         headers_max_length = headers_len + strlen(header_array[index]) + 3;
         headers_string = Realloc(headers_string, headers_max_length);
@@ -539,7 +471,7 @@ void prepare_request(char **header_array, int header_count, struct request_info 
         headers_len = strlen(headers_string);
     }
 
-    if (needs_host != 0)
+    if (needs_host == TRUE)
     {
         headers_max_length = headers_len + strlen(req_info->host_name) + 9;
         headers_string = Realloc(headers_string, headers_max_length);
@@ -570,7 +502,7 @@ int on_request_received(struct event_state *event_state)
     prepare_request(transaction->req_info->header_array, headerCount, transaction->req_info, transaction);
 
     char *port = Malloc(7);
-    snprintf(port, 6, "%d", transaction->req_info->port);
+    snprintf(port, PORT_SIZE, "%d", transaction->req_info->port);
     int fd = open_clientfd(transaction->req_info->host_name, port);
     Free(port);
 
@@ -598,10 +530,7 @@ int handle_receive_request(struct event_state *event_state)
     struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
     int length = read_all_available(transaction->client_fd, &transaction->buffer, &transaction->buffer_max_length, &transaction->buffer_pos, 1);
 
-    if (length == EWOULDBLOCK_OR_EAGAIN)
-    {
-        return 1;
-    }
+    if (length == EWOULDBLOCK_OR_EAGAIN) return 1;
     else if (length == OTHER_ERROR)
     {
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
