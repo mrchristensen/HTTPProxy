@@ -76,6 +76,8 @@ int sig_int_sent = FALSE;
 void sig_int_term_handler(int sig)
 {
     sig_int_sent = TRUE;
+
+    return;
 }
 
 void free_request_info(struct request_info *req_info)
@@ -84,6 +86,8 @@ void free_request_info(struct request_info *req_info)
     if (req_info->path) Free(req_info->path);
     if (req_info->host_name) Free(req_info->host_name);
     Free(req_info);
+
+    return;
 }
 
 void free_proxy_state(struct proxy_state *state)
@@ -93,6 +97,8 @@ void free_proxy_state(struct proxy_state *state)
     if (state->buffer != 0) free(state->buffer);
     if (state->client_fd != 0) close(state->client_fd);
     free(state);
+
+    return;
 }
 
 int main(int argc, char **argv)
@@ -345,6 +351,8 @@ void on_response_sent(struct event_state *event_state)
 
     free_proxy_state(transaction);
     event_state->event_data = NULL;
+
+    return;
 }
 
 int handle_send_response(struct event_state *event_state)
@@ -391,6 +399,8 @@ void on_response_received(struct event_state *event_state)
     event_state->fd = transaction->client_fd;
 
     transaction->buffer_pos = 0;
+
+    return;
 }
 
 int handle_receive_response(struct event_state *event_state)
@@ -431,6 +441,8 @@ void on_request_sent(struct event_state *event_state)
     transaction->buffer_max_length = 256;
     transaction->buffer_pos = 0;
     transaction->buffer = Malloc(transaction->buffer_max_length);
+
+    return;
 }
 
 int handle_send_request(struct event_state *event_state)
@@ -489,6 +501,8 @@ void prepare_request(char **header_array, int header_count, struct request_info 
     transaction->buffer_max_length = length;
     transaction->buffer_pos = 0;
     transaction->buffer = output;
+
+    return;
 }
 
 int on_request_received(struct event_state *event_state)
