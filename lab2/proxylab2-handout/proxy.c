@@ -9,7 +9,6 @@
 #include <sys/epoll.h>
 #include "csapp.h"
 
-
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 #define MAX_EVENTS 128
@@ -25,7 +24,6 @@
 
 #define EWOULDBLOCK_OR_EAGAIN -1
 #define OTHER_ERROR -2
-
 
 static const char *user_agent_hdr = "Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3";
 
@@ -52,7 +50,6 @@ struct event_state
     void *event_data;
 
     int (*handler)(struct event_state *event_state);
-    
 };
 
 struct proxy_state
@@ -82,7 +79,7 @@ void sig_int_term_handler(int sig)
 
 void free_request_info(void *req_info)
 {
-    struct request_info *info = (struct request_info *) req_info;
+    struct request_info *info = (struct request_info *)req_info;
     if (info->host_name)
     {
         Free(info->host_name);
@@ -135,26 +132,24 @@ int main(int argc, char **argv)
 
     listen_fd = Open_listenfd(argv[1]);
 
-    
     fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
     epoll_fd = epoll_create1(0);
-    
+
     event_state = malloc(sizeof(struct event_state));
     event_state->handler = handle_new_client;
     event_state->fd = listen_fd;
     event_state->event_data = NULL;
 
     event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET; 
+    event.events = EPOLLIN | EPOLLET;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &event);
     printf("listening on with fd: %d\n", listen_fd);
     epoll_cnt++;
 
-   
     events = calloc(MAX_EVENTS, sizeof(event));
 
     while (epoll_cnt > 0)
-    { 
+    {
         max_num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, EWOULDBLOCK_OR_EAGAIN);
         if (sig_int_sent)
         {
@@ -166,12 +161,12 @@ int main(int argc, char **argv)
             }
         }
         if (max_num_events == 0 || max_num_events == EWOULDBLOCK_OR_EAGAIN)
-        { 
+        {
             continue;
         }
 
         for (int index = 0; index < max_num_events; index++)
-        { 
+        {
             struct event_state *temp_event_state = (struct event_state *)events[index].data.ptr;
             if (!temp_event_state->handler(temp_event_state))
             {
@@ -202,11 +197,9 @@ int handle_new_client(struct event_state *event_state_in)
 
     client_length = sizeof(struct sockaddr_storage);
 
-    
     while ((conn_fd = accept(event_state_in->fd, (struct sockaddr *)&client_addr, &client_length)) > 0)
     {
 
-        
         fcntl(conn_fd, F_SETFL, fcntl(conn_fd, F_GETFL, 0) | O_NONBLOCK);
 
         event_state = malloc(sizeof(struct event_state));
@@ -220,21 +213,19 @@ int handle_new_client(struct event_state *event_state_in)
         proxy_state->buffer_pos = 0;
         proxy_state->buffer = malloc(proxy_state->buffer_max_length);
 
-        
         event_state->event_data = proxy_state;
         event.data.ptr = event_state;
-        event.events = EPOLLIN | EPOLLET; 
+        event.events = EPOLLIN | EPOLLET;
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &event);
         epoll_cnt++;
     }
 
     if (errno == EWOULDBLOCK || errno == EAGAIN)
     {
-        
+
         return 1;
     }
     return 0;
-
 }
 
 int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *buf_pos, int reached_end)
@@ -255,7 +246,7 @@ int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *b
 
         if (reached_end != 0 && *buf_pos >= 4 && strncmp("\r\n\r\n", buf + *buf_pos - 4, 4) == FALSE)
         {
-            
+
             end = TRUE;
             break;
         }
@@ -287,7 +278,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *uri = input + 3; 
+    const char *uri = input + 3;
 
     while (isspace(*uri))
     {
@@ -300,7 +291,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *host_start_index = uri + 7; 
+    const char *host_start_index = uri + 7;
     const char *index = host_start_index;
     while (*index != ':' && *index != '/')
     {
@@ -336,7 +327,6 @@ size_t parse_first_line(const char *input, struct request_info *info)
     memcpy(info->path, index, path_len);
     info->path[path_len] = NULL_CHAR;
 
-    
     const char *protocol = next_whitespace_index;
     while (isspace(*protocol))
         protocol++;
@@ -352,13 +342,11 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *header_start_index = protocol + HEADER_SIZE; 
+    const char *header_start_index = protocol + HEADER_SIZE;
     info->valid_request = TRUE;
 
     return (size_t)(header_start_index - input);
 }
-
-
 
 size_t split_headers(char *unsplit, char ***split_out)
 {
@@ -368,12 +356,10 @@ size_t split_headers(char *unsplit, char ***split_out)
     char *begin = unsplit;
     while ((unsplit = strchr(unsplit, '\r')))
     {
-        
-        
-        
+
         if (unsplit[1] == '\n')
         {
-            
+
             if (unsplit != begin)
             {
 
@@ -431,7 +417,7 @@ int handle_send_response(struct event_state *event_state)
     }
     else
     {
-        
+
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
         epoll_cnt--;
 
@@ -449,10 +435,9 @@ void on_response_received(struct event_state *event_state)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
     epoll_cnt--;
 
-    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET; 
+    event.events = EPOLLOUT | EPOLLET;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->client_fd, &event);
     epoll_cnt++;
@@ -471,13 +456,12 @@ int handle_receive_response(struct event_state *event_state)
 
     if (length == EWOULDBLOCK_OR_EAGAIN)
     {
-        
+
         return 1;
     }
     else if (length == OTHER_ERROR)
     {
-        
-        
+
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
         epoll_cnt--;
         return 0;
@@ -496,10 +480,9 @@ void on_request_sent(struct event_state *event_state)
     struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
     event_state->handler = handle_receive_response;
 
-    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET; 
+    event.events = EPOLLIN | EPOLLET;
     event_state->fd = transaction->server_fd;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, transaction->server_fd, &event);
@@ -526,7 +509,6 @@ int handle_send_request(struct event_state *event_state)
         return 1;
     }
     return 0;
-
 }
 
 void prepare_request(char **header_array, int header_count, struct request_info *req_info, struct proxy_state *transaction)
@@ -536,7 +518,7 @@ void prepare_request(char **header_array, int header_count, struct request_info 
     headers_string[0] = NULL_CHAR;
     size_t headers_len = 0;
 
-    int needs_host = TRUE; 
+    int needs_host = TRUE;
     for (int index = 0; index < header_count; index++)
     {
         if (strncmp("Host", header_array[index], 4) == FALSE)
@@ -597,10 +579,9 @@ int on_request_received(struct event_state *event_state)
     transaction->server_fd = fd;
     event_state->handler = handle_send_request;
 
-    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET; 
+    event.events = EPOLLOUT | EPOLLET;
     event_state->fd = transaction->server_fd;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->server_fd, &event);
