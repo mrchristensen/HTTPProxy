@@ -9,7 +9,7 @@
 #include <sys/epoll.h>
 #include "csapp.h"
 
-/* Recommended max cache and object sizes */
+
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 #define MAX_EVENTS 128
@@ -22,7 +22,7 @@
 #define EWOULDBLOCK_OR_EAGAIN -1
 #define OTHER_ERROR -2
 
-/* You won't lose style points for including this long line in your code */
+
 static const char *user_agent_hdr = "Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3";
 
 struct event_state;
@@ -125,7 +125,7 @@ int main(int argc, char **argv)
 
     listen_fd = Open_listenfd(argv[1]);
 
-    // set fd to non-blocking (set flags while keeping existing flags)
+    
     fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
     epoll_fd = epoll_create1(0);
     
@@ -135,16 +135,16 @@ int main(int argc, char **argv)
     event_state->event_data = NULL;
 
     event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET; // edge-triggered monitoring
+    event.events = EPOLLIN | EPOLLET; 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &event);
     printf("listening on with fd: %d\n", listen_fd);
     epoll_cnt++;
 
-    /* Buffer where events are returned */
+   
     events = calloc(MAX_EVENTS, sizeof(event));
 
     while (epoll_cnt > 0)
-    { //can't make timeout work. So waiting till no more events
+    { 
         max_num_events = epoll_wait(epoll_fd, events, MAX_EVENTS, EWOULDBLOCK_OR_EAGAIN);
         if (sig_int_sent)
         {
@@ -156,12 +156,12 @@ int main(int argc, char **argv)
             }
         }
         if (max_num_events == 0 || max_num_events == EWOULDBLOCK_OR_EAGAIN)
-        { // size_t is unsigned, so -1 isn't actually < 0. Rip
+        { 
             continue;
         }
 
         for (int index = 0; index < max_num_events; index++)
-        { //iterate through events and handle them
+        { 
             struct event_state *temp_event_state = (struct event_state *)events[index].data.ptr;
             if (!temp_event_state->handler(temp_event_state))
             {
@@ -192,11 +192,11 @@ int handle_new_client(struct event_state *event_state_in)
 
     client_length = sizeof(struct sockaddr_storage);
 
-    // loop and get all available client connections
+    
     while ((conn_fd = accept(event_state_in->fd, (struct sockaddr *)&client_addr, &client_length)) > 0)
     {
 
-        // set fd to non-blocking (set flags while keeping existing flags)
+        
         fcntl(conn_fd, F_SETFL, fcntl(conn_fd, F_GETFL, 0) | O_NONBLOCK);
 
         event_state = malloc(sizeof(struct event_state));
@@ -210,17 +210,17 @@ int handle_new_client(struct event_state *event_state_in)
         proxy_state->buffer_pos = 0;
         proxy_state->buffer = malloc(proxy_state->buffer_max_length);
 
-        // add event to epoll file descriptor
+        
         event_state->event_data = proxy_state;
         event.data.ptr = event_state;
-        event.events = EPOLLIN | EPOLLET; // use edge-triggered monitoring
+        event.events = EPOLLIN | EPOLLET; 
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &event);
         epoll_cnt++;
     }
 
     if (errno == EWOULDBLOCK || errno == EAGAIN)
     {
-        // no more clients to accept()
+        
         return 1;
     }
     return 0;
@@ -245,7 +245,7 @@ int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *b
 
         if (reached_end != 0 && *buf_pos >= 4 && strncmp("\r\n\r\n", buf + *buf_pos - 4, 4) == FALSE)
         {
-            // The end has been reached!
+            
             end = TRUE;
             break;
         }
@@ -277,7 +277,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *uri = input + 3; // skip GET
+    const char *uri = input + 3; 
 
     while (isspace(*uri))
     {
@@ -290,7 +290,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *host_start_index = uri + 7; // skip http://
+    const char *host_start_index = uri + 7; 
     const char *index = host_start_index;
     while (*index != ':' && *index != '/')
     {
@@ -326,7 +326,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
     memcpy(info->path, index, path_len);
     info->path[path_len] = NULL_CHAR;
 
-    // Ensure protocol matches and eat crlf
+    
     const char *protocol = next_whitespace_index;
     while (isspace(*protocol))
         protocol++;
@@ -342,14 +342,14 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *header_start_index = protocol + 10; // Skip HTTP/1.1\r\n
+    const char *header_start_index = protocol + 10; 
     info->valid_request = TRUE;
 
     return (size_t)(header_start_index - input);
 }
 
-// This throws away the last part of the string if it doesn't end in \r\n
-// I think any requests should always end in \r\n, but that is an assumption I'm making
+
+
 size_t split_headers(char *unsplit, char ***split_out)
 {
     int arr_size = 10;
@@ -358,12 +358,12 @@ size_t split_headers(char *unsplit, char ***split_out)
     char *begin = unsplit;
     while ((unsplit = strchr(unsplit, '\r')))
     {
-        // Not sure if this check is necessary, because
-        // I don't think you can have \r without \n, but
-        // better safe than sorry.
+        
+        
+        
         if (unsplit[1] == '\n')
         {
-            // This will make it skip empty lines
+            
             if (unsplit != begin)
             {
 
@@ -421,7 +421,7 @@ int handle_send_response(struct event_state *event_state)
     }
     else
     {
-        // An error occured, so clean up nicely.
+        
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
         epoll_cnt--;
 
@@ -439,10 +439,10 @@ void on_response_received(struct event_state *event_state)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
     epoll_cnt--;
 
-    // add event to epoll file descriptor
+    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET; // use edge-triggered monitoring
+    event.events = EPOLLOUT | EPOLLET; 
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->client_fd, &event);
     epoll_cnt++;
@@ -461,13 +461,13 @@ int handle_receive_response(struct event_state *event_state)
 
     if (length == EWOULDBLOCK_OR_EAGAIN)
     {
-        // read_all_available encountered EWOULDBLOCK or EAGAIN
+        
         return 1;
     }
     else if (length == OTHER_ERROR)
     {
-        // Some other error happened....
-        // So close stuff nicely and keep on keepin' on!
+        
+        
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
         epoll_cnt--;
         return 0;
@@ -486,10 +486,10 @@ void on_request_sent(struct event_state *event_state)
     struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
     event_state->handler = handle_receive_response;
 
-    // add event to epoll file descriptor
+    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET; // use edge-triggered monitoring
+    event.events = EPOLLIN | EPOLLET; 
     event_state->fd = transaction->server_fd;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_MOD, transaction->server_fd, &event);
@@ -535,7 +535,7 @@ void prepare_request(char **header_array, int header_count, struct request_info 
         }
         else if (strncmp("User-Agent", header_array[index], 10) == FALSE ||
                  strncmp("Connection", header_array[index], 10) == FALSE ||
-                 strncmp("Proxy-Connection", header_array[index], 16) == 0)  //todo: abtract this
+                 strncmp("Proxy-Connection", header_array[index], 16) == 0)
         {
             continue;
         }
@@ -587,10 +587,10 @@ int on_request_received(struct event_state *event_state)
     transaction->server_fd = fd;
     event_state->handler = handle_send_request;
 
-    // add event to epoll file descriptor
+    
     struct epoll_event event;
     event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET; // use edge-triggered monitoring
+    event.events = EPOLLOUT | EPOLLET; 
     event_state->fd = transaction->server_fd;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->server_fd, &event);
