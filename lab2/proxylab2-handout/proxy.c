@@ -13,11 +13,15 @@
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 #define MAX_EVENTS 128
+#define HEADER_SIZE 10
+#define PROXY_SIZE 16
 
 #define TRUE 1
 #define FALSE 0
 
 #define NULL_CHAR '\0'
+
+#define TCP_PORT 80
 
 #define EWOULDBLOCK_OR_EAGAIN -1
 #define OTHER_ERROR -2
@@ -32,31 +36,37 @@ int handle_receive_request(struct event_state *event_state);
 
 struct request_info
 {
-    int valid_request;
+    char **header_array;
+
+    char *path;
     char *host_name;
     int port;
-    char *path;
-    char **header_array;
+
+    int valid_request;
 };
 
 struct event_state
 {
-    int (*handler)(struct event_state *event_state);
-    void *event_data;
     int fd;
+
+    void *event_data;
+
+    int (*handler)(struct event_state *event_state);
+    
 };
 
 struct proxy_state
 {
-    struct request_info *req_info;
+    int server_fd;
+    int client_fd;
+
+    size_t buffer_max_length;
+    size_t buffer_length;
+    size_t buffer_pos;
 
     char *buffer;
-    size_t buffer_pos;
-    size_t buffer_length;
-    size_t buffer_max_length;
 
-    int client_fd;
-    int server_fd;
+    struct request_info *req_info;
 };
 
 int listen_fd;
@@ -300,7 +310,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
     const char *host_end_index = index;
     if (*index != ':')
     {
-        info->port = 80;
+        info->port = TCP_PORT;
     }
     else
     {
@@ -342,7 +352,7 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *header_start_index = protocol + 10; 
+    const char *header_start_index = protocol + HEADER_SIZE; 
     info->valid_request = TRUE;
 
     return (size_t)(header_start_index - input);
@@ -352,8 +362,8 @@ size_t parse_first_line(const char *input, struct request_info *info)
 
 size_t split_headers(char *unsplit, char ***split_out)
 {
-    int arr_size = 10;
-    char **split = Malloc(sizeof(char *) * arr_size);
+    int header_array_size = HEADER_SIZE;
+    char **split = Malloc(sizeof(char *) * header_array_size);
     int count = 0;
     char *begin = unsplit;
     while ((unsplit = strchr(unsplit, '\r')))
@@ -368,10 +378,10 @@ size_t split_headers(char *unsplit, char ***split_out)
             {
 
                 unsplit[0] = NULL_CHAR;
-                if (count == arr_size)
+                if (count == header_array_size)
                 {
-                    split = Realloc(split, sizeof(char *) * (arr_size + 10));
-                    arr_size += 10;
+                    split = Realloc(split, sizeof(char *) * (header_array_size + HEADER_SIZE));
+                    header_array_size += HEADER_SIZE;
                 }
                 split[count] = begin;
                 count++;
@@ -533,9 +543,9 @@ void prepare_request(char **header_array, int header_count, struct request_info 
         {
             needs_host = FALSE;
         }
-        else if (strncmp("User-Agent", header_array[index], 10) == FALSE ||
-                 strncmp("Connection", header_array[index], 10) == FALSE ||
-                 strncmp("Proxy-Connection", header_array[index], 16) == 0)
+        else if (strncmp("User-Agent", header_array[index], HEADER_SIZE) == FALSE ||
+                 strncmp("Connection", header_array[index], HEADER_SIZE) == FALSE ||
+                 strncmp("Proxy-Connection", header_array[index], PROXY_SIZE) == 0)
         {
             continue;
         }
