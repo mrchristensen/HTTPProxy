@@ -15,9 +15,11 @@
 #define HEADER_SIZE 10
 #define PROXY_SIZE 16
 #define PORT_SIZE 6
-
+#define BUFFER_LENGTH 256
 #define TRUE 1
 #define FALSE 0
+
+#define INDEX 2
 
 #define NULL_CHAR '\0'
 
@@ -26,23 +28,18 @@
 #define EWOULDBLOCK_OR_EAGAIN -1
 #define OTHER_ERROR -2
 
+int listen_fd;
+int epoll_fd;
+
+int epoll_cnt = 0;
+int sig_int_sent = FALSE;
+
 static const char *user_agent_hdr = "Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3";
 
 struct event_state;
 
-int handle_new_client(struct event_state *event_state_in);
-int handle_receive_request(struct event_state *event_state);
-
-struct request_info
-{
-    char **header_array;
-
-    char *path;
-    char *host_name;
-    int port;
-
-    int valid_request;
-};
+int client_event(struct event_state *event_state_in);
+int do_recv_req(struct event_state *event_state);
 
 struct event_state
 {
@@ -67,20 +64,18 @@ struct proxy_state
     struct request_info *req_info;
 };
 
-int listen_fd;
-int epoll_fd;
-
-int epoll_cnt = 0;
-int sig_int_sent = FALSE;
-
-void sig_int_term_handler(int sig)
+struct request_info
 {
-    sig_int_sent = TRUE;
+    char **header_array;
 
-    return;
-}
+    char *path;
+    char *host_name;
+    int port;
 
-void free_request_info(struct request_info *req_info)
+    int valid_request;
+};
+
+void free_info(struct request_info *req_info)
 {
     if (req_info->header_array) Free(req_info->header_array);
     if (req_info->path) Free(req_info->path);
@@ -90,9 +85,9 @@ void free_request_info(struct request_info *req_info)
     return;
 }
 
-void free_proxy_state(struct proxy_state *state)
+void free_state(struct proxy_state *state)
 {
-    if (state->req_info != 0) free_request_info(state->req_info);
+    if (state->req_info != 0) free_info(state->req_info);
     if (state->server_fd != 0) close(state->server_fd);
     if (state->buffer != 0) free(state->buffer);
     if (state->client_fd != 0) close(state->client_fd);
@@ -101,20 +96,26 @@ void free_proxy_state(struct proxy_state *state)
     return;
 }
 
+void sig_int_term_handler(int sig)
+{
+    sig_int_sent = TRUE;
+
+    return;
+}
+
 int main(int argc, char **argv)
 {
     printf("Start of main\n");
-
-    signal(SIGPIPE, SIG_IGN);
-    
-    signal(SIGTERM, sig_int_term_handler);
-    signal(SIGINT, sig_int_term_handler);
 
     size_t max_num_events;
     struct event_state *event_state;
     struct epoll_event *epoll_events;
     struct epoll_event epoll_event;
 
+    signal(SIGPIPE, SIG_IGN);
+    
+    signal(SIGTERM, sig_int_term_handler);
+    signal(SIGINT, sig_int_term_handler);
 
     listen_fd = Open_listenfd(argv[1]);
     
@@ -129,7 +130,7 @@ int main(int argc, char **argv)
 
     event_state->event_data = NULL;
     event_state->fd = listen_fd;
-    event_state->handler = handle_new_client;
+    event_state->handler = client_event;
     epoll_event.data.ptr = event_state;
     epoll_event.events = EPOLLIN | EPOLLET;
 
@@ -161,7 +162,7 @@ int main(int argc, char **argv)
             if (!temp_event_state->handler(temp_event_state))
             {
                 if (temp_event_state->fd != EWOULDBLOCK_OR_EAGAIN) close(temp_event_state->fd);
-                if (temp_event_state->event_data != 0) free_proxy_state((struct proxy_state *)temp_event_state->event_data);
+                if (temp_event_state->event_data != 0) free_state((struct proxy_state *)temp_event_state->event_data);
                 
                 free(temp_event_state);
             }
@@ -171,79 +172,87 @@ int main(int argc, char **argv)
     free(event_state);
 }
 
-int handle_new_client(struct event_state *event_state_in)
+int read_possible_message(int fd, char **buffer_out, size_t *buffer_max_length, size_t *buffer_pos, int reached_end)
 {
-    socklen_t client_length;
-    int conn_fd;
-    struct sockaddr_storage client_addr;
-    struct epoll_event event;
-    struct proxy_state *proxy_state;
-    struct event_state *event_state;
-
-    client_length = sizeof(struct sockaddr_storage);
-
-    while ((conn_fd = accept(event_state_in->fd, (struct sockaddr *)&client_addr, &client_length)) > 0)
-    {
-
-        fcntl(conn_fd, F_SETFL, fcntl(conn_fd, F_GETFL, 0) | O_NONBLOCK);
-
-        event_state = malloc(sizeof(struct event_state));
-        event_state->handler = handle_receive_request;
-        event_state->fd = conn_fd;
-        proxy_state = malloc(sizeof(struct proxy_state));
-        proxy_state->req_info = NULL;
-        proxy_state->client_fd = conn_fd;
-        proxy_state->server_fd = EWOULDBLOCK_OR_EAGAIN;
-        proxy_state->buffer_max_length = 256;
-        proxy_state->buffer_pos = 0;
-        proxy_state->buffer = malloc(proxy_state->buffer_max_length);
-
-        event_state->event_data = proxy_state;
-        event.data.ptr = event_state;
-        event.events = EPOLLIN | EPOLLET;
-        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, conn_fd, &event);
-        epoll_cnt++;
-    }
-
-    return (errno == EWOULDBLOCK || errno == EAGAIN) ? 1 : 0;
-}
-
-int read_all_available(int fd, char **buf_out, size_t *buf_max_length, size_t *buf_pos, int reached_end)
-{
-    char *buf = *buf_out;
+    char *buffer = *buffer_out;
     int end = FALSE;
 
     int read_count;
-    while ((read_count = read(fd, buf + *buf_pos, *buf_max_length - *buf_pos - 1)) > FALSE)
+    while ((read_count = read(fd, buffer + *buffer_pos, *buffer_max_length - *buffer_pos - 1)) > FALSE)
     {
-        *buf_pos += read_count;
+        *buffer_pos += read_count;
 
-        if (*buf_pos == *buf_max_length - 1)
+        if (*buffer_pos == *buffer_max_length - 1)
         {
-            buf = Realloc(buf, *buf_max_length + 256);
-            *buf_max_length += 256;
+            buffer = Realloc(buffer, *buffer_max_length + 256);
+            *buffer_max_length += 256;
         }
 
-        if (reached_end != 0 && *buf_pos >= 4 && strncmp("\r\n\r\n", buf + *buf_pos - 4, 4) == FALSE)
+        if (reached_end != 0 && *buffer_pos >= 4 && strncmp("\r\n\r\n", buffer + *buffer_pos - 4, 4) == FALSE)
         {
             end = TRUE;
             break;
         }
     }
 
-    *buf_out = buf;
+    *buffer_out = buffer;
 
     if (read_count == 0 || end != 0)
     {
-        buf[*buf_pos] = NULL_CHAR;
-        return *buf_pos;
+        buffer[*buffer_pos] = NULL_CHAR;
+        return *buffer_pos;
     }
 
     return (errno == EWOULDBLOCK || errno == EAGAIN) ? EWOULDBLOCK_OR_EAGAIN : OTHER_ERROR;
 }
 
-size_t parse_first_line(const char *input, struct request_info *info)
+int client_event(struct event_state *new_event_state)
 {
+    struct event_state *event_state;
+    struct proxy_state *proxy_state;
+
+    struct epoll_event event;
+    struct sockaddr_storage client_addr;
+
+    socklen_t client_length = sizeof(struct sockaddr_storage);
+    int fd;
+
+    while ((fd = accept(new_event_state->fd, (struct sockaddr *)&client_addr, &client_length)) > 0)
+    {
+
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        
+        proxy_state = malloc(sizeof(struct proxy_state));
+        proxy_state->buffer_max_length = BUFFER_LENGTH;
+        proxy_state->buffer_pos = 0;
+        proxy_state->server_fd = EWOULDBLOCK_OR_EAGAIN;
+        proxy_state->buffer = malloc(proxy_state->buffer_max_length);
+        proxy_state->client_fd = fd;
+
+        event_state = malloc(sizeof(struct event_state));
+        event_state->fd = fd;
+        event_state->handler = do_recv_req;
+
+        event_state->event_data = proxy_state;
+        event.data.ptr = event_state;
+        event.events = EPOLLIN | EPOLLET;
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event);
+        epoll_cnt++;
+    }
+
+    return (errno == EWOULDBLOCK || errno == EAGAIN) ? 1 : 0;
+}
+
+size_t parse_line(const char *input, struct request_info *info)
+{
+    const char *uri;
+    const char *index;
+    const char *host_start_index;
+    const char *host_end_index;
+    size_t host_length;
+    const char *next_whitespace_index;
+    const char *header_start_index;
+
     memset(info, 0, sizeof(struct request_info));
     if (strncmp("GET", input, 3) != FALSE)
     {
@@ -251,10 +260,9 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *uri = input + 3;
+    uri = input + 3;
 
     while (isspace(*uri)) uri++;
-    
 
     if (strncmp("http://", uri, 7) != FALSE)
     {
@@ -262,12 +270,12 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *host_start_index = uri + 7;
-    const char *index = host_start_index;
-    while (*index != ':' && *index != '/') index++;
-    
+    host_start_index = uri + 7;
+    index = host_start_index;
 
-    const char *host_end_index = index;
+    while (*index != ':' && *index != '/') index++;
+
+    host_end_index = index;
     
     if (*index != ':') info->port = TCP_PORT;
     else
@@ -277,17 +285,21 @@ size_t parse_first_line(const char *input, struct request_info *info)
         while (isdigit(*index)) index++;
         info->port = atoi(port_start_index);
     }
-    size_t host_length = host_end_index - host_start_index;
+
+    host_length = host_end_index - host_start_index;
     info->host_name = Malloc(host_length + 1);
     memcpy(info->host_name, host_start_index, host_length);
     info->host_name[host_length] = NULL_CHAR;
 
-    const char *next_whitespace_index = index;
+    next_whitespace_index = index;
+
     while (!isspace(*next_whitespace_index)) next_whitespace_index++;
 
     size_t path_len = next_whitespace_index - index;
+
     info->path = Malloc(path_len + 1);
     memcpy(info->path, index, path_len);
+
     info->path[path_len] = NULL_CHAR;
 
     const char *protocol = next_whitespace_index;
@@ -299,268 +311,242 @@ size_t parse_first_line(const char *input, struct request_info *info)
         return EWOULDBLOCK_OR_EAGAIN;
     }
 
-    const char *header_start_index = protocol + HEADER_SIZE;
+    header_start_index = protocol + HEADER_SIZE;
     info->valid_request = TRUE;
 
     return (size_t)(header_start_index - input);
 }
 
-size_t split_headers(char *unsplit, char ***split_out)
+int send_response_event(struct event_state *event_state)
 {
-    int header_array_size = HEADER_SIZE;
-    char **split = Malloc(sizeof(char *) * header_array_size);
-    int count = 0;
-    char *begin = unsplit;
-    while ((unsplit = strchr(unsplit, '\r')))
-    {
-
-        if (unsplit[1] == '\n')
-        {
-
-            if (unsplit != begin)
-            {
-
-                unsplit[0] = NULL_CHAR;
-                if (count == header_array_size)
-                {
-                    split = Realloc(split, sizeof(char *) * (header_array_size + HEADER_SIZE));
-                    header_array_size += HEADER_SIZE;
-                }
-                split[count] = begin;
-                count++;
-            }
-
-            unsplit += 2;
-            begin = unsplit;
-        }
-    }
-
-    *split_out = split;
-
-    return count;
-}
-
-void on_response_sent(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-
-    epoll_cnt--;
-
-    close(transaction->client_fd);
-    close(transaction->server_fd);
-
-    free_proxy_state(transaction);
-    event_state->event_data = NULL;
-
-    return;
-}
-
-int handle_send_response(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
+    struct proxy_state *state = (struct proxy_state *)event_state->event_data;
 
     int write_count;
-    while ((write_count = write(transaction->client_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE) transaction->buffer_pos += write_count;
+    while ((write_count = write(state->client_fd, state->buffer + state->buffer_pos, state->buffer_length - state->buffer_pos)) > FALSE) state->buffer_pos += write_count;
     
-
     if (write_count == 0)
     {
-        on_response_sent(event_state);
+        struct proxy_state *state = (struct proxy_state *)event_state->event_data;
+
+        event_state->event_data = NULL;
+
+        close(state->server_fd);
+        close(state->client_fd);
+
+        free_state(state);
+
+        epoll_cnt--;
+
         return 0;
     }
     else if (errno == EWOULDBLOCK || errno == EAGAIN) return 1;
     else
     {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
+        event_state->event_data = NULL;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, state->client_fd, NULL);
         epoll_cnt--;
 
-        free_proxy_state(transaction);
-        event_state->event_data = NULL;
+        free_state(state);
 
         return 0;
     }
 }
 
-void on_response_received(struct event_state *event_state)
+int do_recv_resp(struct event_state *event_state)
 {
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
+    struct proxy_state *state = (struct proxy_state *)event_state->event_data;
 
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
-    epoll_cnt--;
-
-    struct epoll_event event;
-    event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET;
-
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->client_fd, &event);
-    epoll_cnt++;
-
-    event_state->handler = handle_send_response;
-    event_state->fd = transaction->client_fd;
-
-    transaction->buffer_pos = 0;
-
-    return;
-}
-
-int handle_receive_response(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-
-    int length = read_all_available(transaction->server_fd, &transaction->buffer, &transaction->buffer_max_length, &transaction->buffer_pos, 0);
+    int length = read_possible_message(state->server_fd, &state->buffer, &state->buffer_max_length, &state->buffer_pos, 0);
 
     if (length == EWOULDBLOCK_OR_EAGAIN) return 1;
     else if (length == OTHER_ERROR)
     {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->server_fd, NULL);
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, state->server_fd, NULL);
         epoll_cnt--;
         return 0;
     }
     else
     {
-        transaction->buffer_length = length;
+        state->buffer_length = length;
 
-        on_response_received(event_state);
+        struct proxy_state *state = (struct proxy_state *)event_state->event_data;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, state->server_fd, NULL);
+        epoll_cnt--;
+
+        struct epoll_event event;
+        event.data.ptr = event_state;
+        event.events = EPOLLOUT | EPOLLET;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, state->client_fd, &event);
+        epoll_cnt++;
+
+        event_state->handler = send_response_event;
+        event_state->fd = state->client_fd;
+
+        state->buffer_pos = 0;
         return 1;
     }
 }
 
-void on_request_sent(struct event_state *event_state)
+int do_send_req(struct event_state *event_state)
 {
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-    event_state->handler = handle_receive_response;
-
-    struct epoll_event event;
-    event.data.ptr = event_state;
-    event.events = EPOLLIN | EPOLLET;
-    event_state->fd = transaction->server_fd;
-
-    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, transaction->server_fd, &event);
-
-    Free(transaction->buffer);
-    transaction->buffer_max_length = 256;
-    transaction->buffer_pos = 0;
-    transaction->buffer = Malloc(transaction->buffer_max_length);
-
-    return;
-}
-
-int handle_send_request(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-
     int write_count;
+    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
+
     while ((write_count = write(transaction->server_fd, transaction->buffer + transaction->buffer_pos, transaction->buffer_length - transaction->buffer_pos)) > FALSE) transaction->buffer_pos += write_count;
 
     if (write_count == 0)
     {
-        on_request_sent(event_state);
+        struct epoll_event event;
+
+        event_state->handler = do_recv_resp;
+
+        struct proxy_state *state = (struct proxy_state *)event_state->event_data;
+
+        event_state->fd = state->server_fd;
+
+        event.events = EPOLLIN | EPOLLET;
+        event.data.ptr = event_state;
+
+        Free(state->buffer);
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, state->server_fd, &event);
+
+        state->buffer_max_length = BUFFER_LENGTH;
+        state->buffer = Malloc(state->buffer_max_length);
+        state->buffer_pos = 0;
         return 1;
     }
     return 0;
 }
 
-void prepare_request(char **header_array, int header_count, struct request_info *req_info, struct proxy_state *transaction)
+int do_recv_req(struct event_state *event_state)
 {
-    size_t headers_max_length = 256;
-    char *headers_string = Malloc(headers_max_length);
-    headers_string[0] = NULL_CHAR;
-    size_t headers_len = 0;
-
-    int needs_host = TRUE;
-    for (int index = 0; index < header_count; index++)
-    {
-        if (strncmp("Host", header_array[index], 4) == FALSE) needs_host = FALSE;
-        else if (strncmp("User-Agent", header_array[index], HEADER_SIZE) == FALSE ||
-                 strncmp("Connection", header_array[index], HEADER_SIZE) == FALSE ||
-                 strncmp("Proxy-Connection", header_array[index], PROXY_SIZE) == 0)  continue;
-        
-
-        headers_max_length = headers_len + strlen(header_array[index]) + 3;
-        headers_string = Realloc(headers_string, headers_max_length);
-        strcat(headers_string, header_array[index]);
-        strcat(headers_string, "\r\n");
-        headers_len = strlen(headers_string);
-    }
-
-    if (needs_host == TRUE)
-    {
-        headers_max_length = headers_len + strlen(req_info->host_name) + 9;
-        headers_string = Realloc(headers_string, headers_max_length);
-        strcat(headers_string, "Host: ");
-        strcat(headers_string, req_info->host_name);
-        strcat(headers_string, "\r\n");
-    }
-
-    char *output;
-    int length = asprintf(&output, "GET %s HTTP/1.0\r\n%s\r\nUser-Agent: %s\r\nConnection: close\r\nProxy-Connection: close\r\n\r\n", req_info->path, headers_string, user_agent_hdr);
-    Free(headers_string);
-
-    Free(transaction->buffer);
-    transaction->buffer_length = length;
-    transaction->buffer_max_length = length;
-    transaction->buffer_pos = 0;
-    transaction->buffer = output;
-
-    return;
-}
-
-int on_request_received(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-
-    transaction->req_info = Malloc(sizeof(struct request_info));
-    size_t firstLineLength = parse_first_line(transaction->buffer, transaction->req_info);
-
-    int headerCount = split_headers(transaction->buffer + firstLineLength, &transaction->req_info->header_array);
-    prepare_request(transaction->req_info->header_array, headerCount, transaction->req_info, transaction);
-
-    char *port = Malloc(7);
-    snprintf(port, PORT_SIZE, "%d", transaction->req_info->port);
-    int fd = open_clientfd(transaction->req_info->host_name, port);
-    Free(port);
-
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-
-    transaction->server_fd = fd;
-    event_state->handler = handle_send_request;
-
-    struct epoll_event event;
-    event.data.ptr = event_state;
-    event.events = EPOLLOUT | EPOLLET;
-    event_state->fd = transaction->server_fd;
-
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->server_fd, &event);
-    epoll_cnt++;
-
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
-    epoll_cnt--;
-
-    return 1;
-}
-
-int handle_receive_request(struct event_state *event_state)
-{
-    struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
-    int length = read_all_available(transaction->client_fd, &transaction->buffer, &transaction->buffer_max_length, &transaction->buffer_pos, 1);
+    struct proxy_state *state = (struct proxy_state *)event_state->event_data;
+    int length = read_possible_message(state->client_fd, &state->buffer, &state->buffer_max_length, &state->buffer_pos, 1);
 
     if (length == EWOULDBLOCK_OR_EAGAIN) return 1;
     else if (length == OTHER_ERROR)
     {
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, state->client_fd, NULL);
         epoll_cnt--;
         return 0;
     }
     else
     {
-        transaction->buffer_length = length;
+        state->buffer_length = length;
 
-        int ret = on_request_received(event_state);
-        if (ret == 0)
+        do_recv_req(event_state);
+
+        size_t headers_max_length = BUFFER_LENGTH;
+        size_t headers_len = 0;
+        struct proxy_state *transaction = (struct proxy_state *)event_state->event_data;
+
+        transaction->req_info = Malloc(sizeof(struct request_info));
+        size_t firstLineLength = parse_line(transaction->buffer, transaction->req_info);
+
+        char *headers_string = Malloc(headers_max_length);
+        headers_string[0] = NULL_CHAR;
+
+        int header_count;
+
+        char ***split_header = &transaction->req_info->header_array;
+
+        int count = 0;
+        int header_array_size = HEADER_SIZE;
+        char **split = Malloc(sizeof(char *) * header_array_size);
+
+        char *original_header = transaction->buffer + firstLineLength;
+        char *begin = original_header;
+
+        while ((original_header = strchr(original_header, '\r')))
         {
-            epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
-            epoll_cnt--;
+            if (original_header[1] == '\n')
+            {
+                if (original_header != begin)
+                {
+                    original_header[0] = NULL_CHAR;
+                    if (count == header_array_size)
+                    {
+                        split = Realloc(split, sizeof(char *) * (header_array_size + HEADER_SIZE));
+                        header_array_size += HEADER_SIZE;
+                    }
+                    split[count] = begin;
+                    count++;
+                }
+
+                original_header += INDEX;
+
+                begin = original_header;
+            }
         }
-        return ret;
+
+        *split_header = split;
+
+        header_count = count;
+
+        int needs_host = TRUE;
+        for (int index = 0; index < header_count; index++)
+        {
+            if (strncmp("Host", transaction->req_info->header_array[index], 4) == FALSE) needs_host = FALSE;
+            else if (strncmp("User-Agent", transaction->req_info->header_array[index], HEADER_SIZE) == FALSE ||
+                     strncmp("Connection", transaction->req_info->header_array[index], HEADER_SIZE) == FALSE ||
+                     strncmp("Proxy-Connection", transaction->req_info->header_array[index], PROXY_SIZE) == 0)  continue;
+
+
+            headers_max_length = headers_len + strlen(transaction->req_info->header_array[index]) + 3;
+            headers_string = Realloc(headers_string, headers_max_length);
+
+            strcat(headers_string, transaction->req_info->header_array[index]);
+            strcat(headers_string, "\r\n");
+
+            headers_len = strlen(headers_string);
+        }
+
+        if (needs_host == TRUE)
+        {
+            headers_max_length = headers_len + strlen(transaction->req_info->host_name) + 9;
+            headers_string = Realloc(headers_string, headers_max_length);
+
+            strcat(headers_string, "Host: ");
+            strcat(headers_string, transaction->req_info->host_name);
+            strcat(headers_string, "\r\n");
+        }
+
+        struct epoll_event event;
+
+        char *output;
+        int length = asprintf(&output, "GET %s HTTP/1.0\r\n%s\r\nUser-Agent: %s\r\nConnection: close\r\nProxy-Connection: close\r\n\r\n", transaction->req_info->path, headers_string, user_agent_hdr);
+        Free(headers_string);
+
+        Free(transaction->buffer);
+        transaction->buffer_length = transaction->buffer_max_length = length;
+        transaction->buffer_pos = 0;
+        transaction->buffer = output;
+
+        char *port = Malloc(7);
+        snprintf(port, PORT_SIZE, "%d", transaction->req_info->port);
+        int fd = open_clientfd(transaction->req_info->host_name, port);
+        Free(port);
+
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+
+        transaction->server_fd = fd;
+        event_state->handler = do_send_req;
+
+        event_state->fd = transaction->server_fd;
+        event.events = EPOLLOUT | EPOLLET;
+        event.data.ptr = event_state;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, transaction->server_fd, &event);
+        epoll_cnt++;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, transaction->client_fd, NULL);
+        epoll_cnt--;
+
+        return 1;
+
     }
 }
